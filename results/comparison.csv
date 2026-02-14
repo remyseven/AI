@@ -1,0 +1,6 @@
+Strategy,Total Return %,CAGR %,Max Drawdown %,Sharpe,Sortino,Calmar,Profit Factor,Win Rate %,Total Trades,Avg Trade %,Avg Win %,Avg Loss %,Max Consec Losses,Time in Market %
+V1: Dual MA Crossover + Trend Filter,10626.2,58.97,-82.0,2.83,2.69,0.72,19.53,90.9,11,72.94,84.57,-43.3,1,49.8
+V2: RSI + Bollinger Bands Mean Reversion,-97.1,-29.52,-98.1,-2.37,-1.77,-0.3,0.2,34.8,23,-11.38,8.42,-21.94,6,42.7
+V3: MACD + RSI Momentum Cycles,219.3,12.2,-7.2,2.28,2.04,1.69,14.98,52.0,25,5.27,10.87,-0.79,7,6.6
+V4: Multi-Period Momentum + Volume,102.0,7.22,-20.8,1.19,0.47,0.35,146.77,80.0,5,16.83,21.18,-0.58,1,6.6
+V5: Adaptive Cycle (Dynamic Thresholds),-4.6,-0.47,-78.4,0.03,0.02,-0.01,2.16,53.6,28,9.65,33.52,-17.89,2,32.5
