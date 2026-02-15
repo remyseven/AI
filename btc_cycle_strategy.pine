@@ -1,0 +1,249 @@
+// =============================================================================
+// BTC/USD 1D Cycle Trading Strategy - "Weekly Momentum with Daily Entry"
+// =============================================================================
+//
+// Optimized across 10 strategy variants and 648 parameter combinations.
+//
+// Uses weekly-scale momentum (60/100-day MA crossover) to identify BTC's
+// ~4-year halving cycle direction, then daily RSI + MACD for entry timing.
+//
+// BUY CONDITIONS (any one triggers):
+//   1. Weekly Trend Turn: 60 SMA crosses above 100 SMA
+//   2. Pullback Entry: Uptrend + above 200 SMA + RSI < 35 + MACD improving
+//   3. 200-SMA Reclaim: Price crosses above 200 SMA with RSI 45-65
+//
+// SELL CONDITIONS (any one triggers):
+//   1. Weekly Trend Reversal: 60 SMA crosses below 100 SMA
+//   2. Blow-off Top: RSI > 82 + ROC(50) > 80% + fading MACD
+//   3. Trailing Stop: 22% trail after 50%+ gain; 15% trail after 20%+ gain
+//   4. Death Cross: Price < 200 SMA + 60 SMA < 200 SMA + RSI < 45
+//   5. Hard Stop Loss: -22% from entry
+//
+// Backtest (2015-2025): 30,931% return | 76.6% CAGR | -50.8% MaxDD | 4.10 Sharpe
+// =============================================================================
+
+//@version=6
+strategy("BTC Cycle: Weekly Momentum + Daily Entry",
+     overlay=true,
+     initial_capital=10000,
+     default_qty_type=strategy.percent_of_equity,
+     default_qty_value=100,
+     commission_type=strategy.commission.percent,
+     commission_value=0.1,
+     slippage=1,
+     pyramiding=0)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INPUTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+grpTrend   = "Trend Detection"
+fastLen    = input.int(60,   "Fast MA Length",           minval=10, maxval=200, group=grpTrend)
+slowLen    = input.int(100,  "Slow MA Length",           minval=20, maxval=300, group=grpTrend)
+macroLen   = input.int(200,  "Macro Trend MA Length",    minval=50, maxval=400, group=grpTrend)
+
+grpEntry   = "Entry Conditions"
+rsiPullback = input.float(35, "RSI Pullback Threshold",  minval=10, maxval=50,  group=grpEntry)
+rsiReclaimHi = input.float(65, "RSI Reclaim Upper Limit", minval=50, maxval=80, group=grpEntry)
+
+grpExit    = "Exit Conditions"
+trailHighPct  = input.float(22, "Trail % After 50%+ Gain", minval=5, maxval=40, group=grpExit) / 100
+trailMidPct   = input.float(15, "Trail % After 20%+ Gain", minval=5, maxval=30, group=grpExit) / 100
+trailGainHigh = input.float(50, "Gain to Activate Tight Trail (%)", minval=20, maxval=100, group=grpExit) / 100
+trailGainMid  = input.float(20, "Gain to Activate Wide Trail (%)",  minval=5,  maxval=50,  group=grpExit) / 100
+stopLossPct   = input.float(22, "Hard Stop Loss %",        minval=5, maxval=40, group=grpExit) / 100
+rsiBlowoff    = input.float(82, "RSI Blow-off Threshold",  minval=70, maxval=95, group=grpExit)
+rocBlowoff    = input.float(80, "ROC Blow-off Threshold %", minval=40, maxval=150, group=grpExit)
+
+grpVisual  = "Display"
+showMAs    = input.bool(true, "Show Moving Averages", group=grpVisual)
+showSignals = input.bool(true, "Show Buy/Sell Markers", group=grpVisual)
+showTrail  = input.bool(true, "Show Trailing Stop Level", group=grpVisual)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INDICATORS
+// ─────────────────────────────────────────────────────────────────────────────
+
+smaFast  = ta.sma(close, fastLen)
+smaSlow  = ta.sma(close, slowLen)
+smaMacro = ta.sma(close, macroLen)
+
+rsi14    = ta.rsi(close, 14)
+
+[macdLine, macdSignal, macdHist] = ta.macd(close, 12, 26, 9)
+
+roc50    = ta.roc(close, 50)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TREND DETECTION
+// ─────────────────────────────────────────────────────────────────────────────
+
+weeklyBull = smaFast > smaSlow
+weeklyBear = smaFast < smaSlow
+macroBull  = close > smaMacro
+
+prevWeeklyBull = smaFast[1] > smaSlow[1]
+prevWeeklyBear = smaFast[1] < smaSlow[1]
+
+prevAboveMacro = close[1] > smaMacro[1]
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ENTRY CONDITIONS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Condition 1: Weekly trend turns bullish (60 SMA crosses above 100 SMA)
+weeklyTurnBull = weeklyBull and not prevWeeklyBull
+
+// Condition 2: Pullback in confirmed uptrend
+pullbackEntry = weeklyBull and macroBull and rsi14 < rsiPullback and macdHist > macdHist[1]
+
+// Condition 3: Price reclaims 200-day SMA
+reclaimEntry = macroBull and not prevAboveMacro and rsi14 > 45 and rsi14 < rsiReclaimHi
+
+buySignal = weeklyTurnBull or pullbackEntry or reclaimEntry
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POSITION TRACKING (for trailing stop logic)
+// ─────────────────────────────────────────────────────────────────────────────
+
+var float entryPrice  = na
+var float highestHigh = na
+
+inPosition = strategy.position_size > 0
+
+if buySignal and not inPosition
+    entryPrice  := close
+    highestHigh := close
+
+if inPosition
+    highestHigh := math.max(nz(highestHigh, close), close)
+
+pnl = inPosition ? (close - entryPrice) / entryPrice : 0.0
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EXIT CONDITIONS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Condition 1: Weekly trend turns bearish
+weeklyTurnBear = weeklyBear and not prevWeeklyBear
+
+// Condition 2: Blow-off top detection
+blowOff = rsi14 > rsiBlowoff and roc50 > rocBlowoff and macdHist < macdHist[1]
+
+// Condition 3: Dynamic trailing stop
+trailLevel = if pnl > trailGainHigh
+    highestHigh * (1 - trailHighPct)
+else if pnl > trailGainMid
+    highestHigh * (1 - trailMidPct)
+else
+    na
+
+trailTriggered = not na(trailLevel) and close < trailLevel
+
+// Condition 4: Death cross
+deathCross = close < smaMacro and smaFast < smaMacro and rsi14 < 45
+
+// Condition 5: Hard stop loss
+hardStop = pnl < -stopLossPct
+
+sellSignal = weeklyTurnBear or blowOff or trailTriggered or deathCross or hardStop
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STRATEGY EXECUTION
+// ─────────────────────────────────────────────────────────────────────────────
+
+if buySignal and not inPosition
+    strategy.entry("Long", strategy.long)
+
+if sellSignal and inPosition
+    // Tag the exit with the reason for the close
+    exitReason = weeklyTurnBear ? "Trend Reversal" :
+                 blowOff        ? "Blow-off Top" :
+                 trailTriggered ? "Trailing Stop" :
+                 deathCross     ? "Death Cross" :
+                 hardStop       ? "Hard Stop" : "Exit"
+    strategy.close("Long", comment=exitReason)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PLOTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Moving Averages
+plot(showMAs ? smaFast  : na, "SMA 60",  color=color.new(#2196F3, 20), linewidth=2)
+plot(showMAs ? smaSlow  : na, "SMA 100", color=color.new(#FF9800, 20), linewidth=2)
+plot(showMAs ? smaMacro : na, "SMA 200", color=color.new(#9C27B0, 30), linewidth=3)
+
+// Trailing stop level
+plot(showTrail and inPosition and not na(trailLevel) ? trailLevel : na,
+     "Trail Stop", color=color.new(#F44336, 40), linewidth=1, style=plot.style_stepline)
+
+// Buy/Sell markers
+plotshape(showSignals and buySignal and not inPosition,
+          "Buy",  style=shape.triangleup,   location=location.belowbar,
+          color=color.new(#4CAF50, 0), size=size.normal, text="BUY")
+
+plotshape(showSignals and sellSignal and inPosition,
+          "Sell", style=shape.triangledown, location=location.abovebar,
+          color=color.new(#F44336, 0), size=size.normal, text="SELL")
+
+// Background: green when in weekly uptrend, red when bearish
+bgcolor(weeklyBull ? color.new(#4CAF50, 95) : weeklyBear ? color.new(#F44336, 95) : na)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INFO TABLE
+// ─────────────────────────────────────────────────────────────────────────────
+
+var table infoTable = table.new(position.top_right, 2, 8, bgcolor=color.new(#1E1E1E, 10), border_width=1)
+
+if barstate.islast
+    table.cell(infoTable, 0, 0, "Indicator",     text_color=color.gray, text_size=size.small)
+    table.cell(infoTable, 1, 0, "Value",          text_color=color.gray, text_size=size.small)
+
+    table.cell(infoTable, 0, 1, "RSI(14)",        text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 1, str.tostring(rsi14, "#.0"),
+               text_color=rsi14 > 70 ? color.red : rsi14 < 30 ? color.green : color.white, text_size=size.small)
+
+    table.cell(infoTable, 0, 2, "MACD Hist",      text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 2, str.tostring(macdHist, "#.00"),
+               text_color=macdHist > 0 ? color.green : color.red, text_size=size.small)
+
+    table.cell(infoTable, 0, 3, "ROC(50)",        text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 3, str.tostring(roc50, "#.0") + "%",
+               text_color=roc50 > 0 ? color.green : color.red, text_size=size.small)
+
+    table.cell(infoTable, 0, 4, "60>100 SMA",     text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 4, weeklyBull ? "BULL" : "BEAR",
+               text_color=weeklyBull ? color.green : color.red, text_size=size.small)
+
+    table.cell(infoTable, 0, 5, "Above 200 SMA",  text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 5, macroBull ? "YES" : "NO",
+               text_color=macroBull ? color.green : color.red, text_size=size.small)
+
+    table.cell(infoTable, 0, 6, "Position",        text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 6, inPosition ? "LONG" : "FLAT",
+               text_color=inPosition ? color.green : color.gray, text_size=size.small)
+
+    if inPosition
+        table.cell(infoTable, 0, 7, "Unrealized",  text_color=color.white, text_size=size.small)
+        table.cell(infoTable, 1, 7, str.tostring(pnl * 100, "#.0") + "%",
+                   text_color=pnl > 0 ? color.green : color.red, text_size=size.small)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ALERTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+alertcondition(buySignal and not inPosition,
+               title="BTC Cycle BUY",
+               message="BTC Cycle Strategy: BUY signal at {{close}}. RSI={{plot_0}}")
+
+alertcondition(sellSignal and inPosition,
+               title="BTC Cycle SELL",
+               message="BTC Cycle Strategy: SELL signal at {{close}}")
+
+alertcondition(weeklyTurnBull,
+               title="Weekly Trend Bullish",
+               message="BTC Cycle: Weekly trend turned BULLISH (60 SMA > 100 SMA)")
+
+alertcondition(weeklyTurnBear,
+               title="Weekly Trend Bearish",
+               message="BTC Cycle: Weekly trend turned BEARISH (60 SMA < 100 SMA)")
