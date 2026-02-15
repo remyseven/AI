@@ -1,0 +1,411 @@
+// =============================================================================
+// BTC/USD 5min Intraday Day Trading Strategy - V11
+// =============================================================================
+//
+// VWAP + EMA Momentum day trading strategy for 5-minute charts.
+// All trades opened and closed within the same session (no overnight holds).
+//
+// ENTRY CONDITIONS (any one triggers):
+//   1. VWAP Bounce: Price pulls back to VWAP in uptrend, bounces with volume
+//   2. EMA Crossover: 9 EMA crosses above 21 EMA with VWAP + MACD confirmation
+//   3. Volume Breakout: 2x+ volume spike above recent high with trend alignment
+//   4. BB Mean Reversion: Oversold bounce off lower Bollinger Band in uptrend
+//
+// EXIT CONDITIONS (any one triggers):
+//   1. Take Profit: 3x ATR from entry (2.5:1 R:R)
+//   2. Stop Loss: 1.2x ATR from entry
+//   3. Trailing Stop: Activated after 1.5x ATR profit, trails at 0.3%
+//   4. RSI Exhaustion: RSI(7) > 80
+//   5. Session Close: Forced exit at 21:00 UTC
+//   6. EMA Death Cross: 9 EMA crosses below 21 EMA while in profit
+//   7. VWAP Failure: Price below VWAP lower band with fading momentum
+//
+// RISK MANAGEMENT:
+//   - Max 3 trades per day
+//   - Stop after 2 losses per day
+//   - 30-minute cooldown after losing trade
+//   - Session filtering (London/NY hours only: 07:00-22:00 UTC)
+// =============================================================================
+
+//@version=6
+strategy("BTC Day Trade: VWAP + EMA Momentum (V11)",
+     overlay=true,
+     initial_capital=10000,
+     default_qty_type=strategy.percent_of_equity,
+     default_qty_value=100,
+     commission_type=strategy.commission.percent,
+     commission_value=0.06,
+     slippage=1,
+     pyramiding=0)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INPUTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+grpEntry  = "Entry Settings"
+emaFastLen  = input.int(9,    "Fast EMA Length",            minval=3,  maxval=30,  group=grpEntry)
+emaMidLen   = input.int(21,   "Mid EMA Length",             minval=10, maxval=50,  group=grpEntry)
+emaSlowLen  = input.int(50,   "Slow EMA Length",            minval=20, maxval=100, group=grpEntry)
+rsiLen      = input.int(7,    "RSI Length",                 minval=3,  maxval=21,  group=grpEntry)
+rsiEntryHi  = input.float(62, "RSI Entry Upper Limit",     minval=50, maxval=75,  group=grpEntry)
+volSpike    = input.float(2.0, "Volume Spike Threshold",   minval=1.2, maxval=5.0, step=0.1, group=grpEntry)
+bbLen       = input.int(20,   "Bollinger Band Length",      minval=10, maxval=50,  group=grpEntry)
+bbMult      = input.float(2.0, "Bollinger Band StdDev",    minval=1.0, maxval=3.0, step=0.1, group=grpEntry)
+
+grpExit   = "Exit Settings"
+atrLen      = input.int(14,   "ATR Length",                 minval=5,  maxval=30,  group=grpExit)
+atrTPMult   = input.float(3.0, "ATR Take Profit Multiplier", minval=1.0, maxval=6.0, step=0.5, group=grpExit)
+atrSLMult   = input.float(1.2, "ATR Stop Loss Multiplier", minval=0.5, maxval=3.0, step=0.1, group=grpExit)
+trailActATR = input.float(1.5, "Trail Activation (ATR mult)", minval=0.5, maxval=3.0, step=0.1, group=grpExit)
+trailPct    = input.float(0.3, "Trail Offset %",           minval=0.1, maxval=1.0, step=0.05, group=grpExit) / 100
+rsiExitLvl  = input.float(80,  "RSI Exit Threshold",       minval=70, maxval=95,  group=grpExit)
+
+grpRisk   = "Risk Management"
+maxTrades   = input.int(3,    "Max Trades Per Day",         minval=1,  maxval=10,  group=grpRisk)
+maxLosses   = input.int(2,    "Max Losses Per Day (stop)",  minval=1,  maxval=5,   group=grpRisk)
+cooldownBars = input.int(6,   "Cooldown Bars After Loss",   minval=0,  maxval=24,  group=grpRisk)
+
+grpSession = "Session Settings"
+londonOpen  = input.int(7,    "London Open (UTC hour)",     minval=0,  maxval=23,  group=grpSession)
+nyClose     = input.int(22,   "New York Close (UTC hour)",  minval=0,  maxval=23,  group=grpSession)
+sessionEnd  = input.int(21,   "Force Close Hour (UTC)",     minval=0,  maxval=23,  group=grpSession)
+
+grpVisual = "Display"
+showVWAP    = input.bool(true, "Show VWAP + Bands",        group=grpVisual)
+showEMAs    = input.bool(true, "Show EMAs",                group=grpVisual)
+showSignals = input.bool(true, "Show Buy/Sell Markers",    group=grpVisual)
+showSLTP    = input.bool(true, "Show Stop/Target Lines",   group=grpVisual)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INDICATORS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// EMAs
+ema9  = ta.ema(close, emaFastLen)
+ema21 = ta.ema(close, emaMidLen)
+ema50 = ta.ema(close, emaSlowLen)
+
+// RSI (fast, 7-period)
+rsi7 = ta.rsi(close, rsiLen)
+
+// MACD (fast settings: 8/17/9)
+[macdLine, macdSignal, macdHist] = ta.macd(close, 8, 17, 9)
+
+// ATR
+atr14 = ta.atr(atrLen)
+
+// VWAP (TradingView built-in, resets daily)
+vwapValue = ta.vwap(hlc3)
+
+// VWAP standard deviation bands
+vwapDev    = ta.stdev(close - vwapValue, bbLen)
+vwapUpper1 = vwapValue + vwapDev
+vwapLower1 = vwapValue - vwapDev
+
+// Bollinger Bands
+bbBasis = ta.sma(close, bbLen)
+bbDev   = bbMult * ta.stdev(close, bbLen)
+bbUpper = bbBasis + bbDev
+bbLower = bbBasis - bbDev
+
+// Volume analysis
+volSMA20  = ta.sma(volume, 20)
+volRatio  = volume / volSMA20
+
+// Recent high (12-bar lookback = 1 hour on 5min)
+recentHigh = ta.highest(high, 12)[1]  // Previous 12 bars, shifted to avoid lookahead
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SESSION DETECTION
+// ─────────────────────────────────────────────────────────────────────────────
+
+currentHour = hour(time, "UTC")
+inLondon    = currentHour >= londonOpen and currentHour < 16
+inNewYork   = currentHour >= 13 and currentHour < nyClose
+highLiquidity = inLondon or inNewYork
+nearSessionEnd = currentHour >= (sessionEnd - 1)
+atSessionEnd   = currentHour >= sessionEnd
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DAILY TRADE/LOSS TRACKING
+// ─────────────────────────────────────────────────────────────────────────────
+
+var int tradesToday  = 0
+var int lossesToday  = 0
+var int cooldownLeft = 0
+
+// Detect new day
+isNewDay = ta.change(dayofweek) != 0
+if isNewDay
+    tradesToday  := 0
+    lossesToday  := 0
+    cooldownLeft := 0
+
+// Decrement cooldown
+if cooldownLeft > 0
+    cooldownLeft -= 1
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POSITION TRACKING
+// ─────────────────────────────────────────────────────────────────────────────
+
+var float entryPrice     = na
+var float highestSince   = na
+var float stopLossLevel  = na
+var float takeProfitLevel = na
+var bool  trailingActive = false
+var float trailingStop   = na
+
+inPosition = strategy.position_size > 0
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ENTRY CONDITIONS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Filters: session, trade limits, cooldown
+canTrade = highLiquidity and not nearSessionEnd and
+           tradesToday < maxTrades and lossesToday < maxLosses and
+           cooldownLeft == 0
+
+// Signal 1: VWAP Bounce
+// Price pulls back to VWAP in uptrend, bounces with volume
+vwapBounce = close > vwapValue and
+             low <= vwapValue * 1.002 and
+             ema9 > ema21 and
+             rsi7 > 40 and rsi7 < rsiEntryHi and
+             volRatio > 1.3 and
+             macdHist > 0
+
+// Signal 2: EMA Momentum Crossover
+// Fresh 9/21 cross above VWAP + 50 EMA with MACD confirmation
+emaCross = ta.crossover(ema9, ema21) and
+           close > vwapValue and
+           close > ema50 and
+           rsi7 > 45 and rsi7 < rsiEntryHi and
+           macdHist > macdHist[1] and
+           volRatio > 1.2
+
+// Signal 3: Volume Breakout
+// Big volume spike above recent high with aligned trend
+volBreakout = close > recentHigh and
+              volRatio >= volSpike and
+              close > vwapValue and
+              ema9 > ema21 and
+              ema21 > ema50 and
+              rsi7 > 50 and rsi7 < 72
+
+// Signal 4: Bollinger Band Mean Reversion
+// Oversold bounce off lower BB in uptrend
+bbReversion = low <= bbLower and
+              close > bbLower and
+              close > open and
+              rsi7 < 35 and
+              volRatio > 1.5 and
+              ema21 > ema50
+
+buySignal = canTrade and not inPosition and
+            (vwapBounce or emaCross or volBreakout or bbReversion)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ENTRY EXECUTION
+// ─────────────────────────────────────────────────────────────────────────────
+
+if buySignal
+    entryPrice     := close
+    highestSince   := close
+    stopLossLevel  := close - atrSLMult * atr14
+    takeProfitLevel := close + atrTPMult * atr14
+    trailingActive := false
+    trailingStop   := na
+    tradesToday    += 1
+    strategy.entry("Long", strategy.long)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POSITION MANAGEMENT & EXIT CONDITIONS
+// ─────────────────────────────────────────────────────────────────────────────
+
+sellSignal = false
+exitReason = ""
+
+if inPosition
+    highestSince := math.max(nz(highestSince, close), close)
+    pnl = (close - entryPrice) / entryPrice
+
+    // Activate trailing stop after reaching threshold
+    if not trailingActive and (close - entryPrice) >= trailActATR * atr14
+        trailingActive := true
+        trailingStop   := close * (1 - trailPct)
+
+    if trailingActive
+        trailingStop := math.max(nz(trailingStop, 0), close * (1 - trailPct))
+
+    // Exit 1: Take profit
+    tpHit = close >= takeProfitLevel
+    // Exit 2: Stop loss
+    slHit = close <= stopLossLevel
+    // Exit 3: Trailing stop
+    trailHit = trailingActive and close <= trailingStop
+    // Exit 4: RSI exhaustion
+    rsiExit = rsi7 >= rsiExitLvl
+    // Exit 5: End-of-session forced close
+    sessionClose = atSessionEnd
+    // Exit 6: EMA death cross in profit
+    emaReversal = ta.crossunder(ema9, ema21) and pnl > 0.003
+    // Exit 7: VWAP failure with fading momentum
+    vwapFail = close < vwapLower1 and pnl < -0.003 and macdHist < macdHist[1]
+
+    sellSignal := tpHit or slHit or trailHit or rsiExit or sessionClose or emaReversal or vwapFail
+
+    if sellSignal
+        exitReason := tpHit        ? "Take Profit" :
+                      slHit        ? "Stop Loss" :
+                      trailHit     ? "Trail Stop" :
+                      rsiExit      ? "RSI Exit" :
+                      sessionClose ? "Session Close" :
+                      emaReversal  ? "EMA Reversal" :
+                      vwapFail     ? "VWAP Fail" : "Exit"
+
+        // Track losses and set cooldown
+        if pnl < 0
+            lossesToday  += 1
+            cooldownLeft := cooldownBars
+
+        strategy.close("Long", comment=exitReason)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PLOTS - VWAP & Bands
+// ─────────────────────────────────────────────────────────────────────────────
+
+pVWAP = plot(showVWAP ? vwapValue : na, "VWAP", color=color.new(#FF9800, 0), linewidth=2)
+pVU1  = plot(showVWAP ? vwapUpper1 : na, "VWAP +1σ", color=color.new(#FF9800, 70), linewidth=1)
+pVL1  = plot(showVWAP ? vwapLower1 : na, "VWAP -1σ", color=color.new(#FF9800, 70), linewidth=1)
+fill(pVU1, pVL1, color=color.new(#FF9800, 93))
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PLOTS - EMAs
+// ─────────────────────────────────────────────────────────────────────────────
+
+plot(showEMAs ? ema9  : na, "EMA 9",  color=color.new(#2196F3, 10), linewidth=1)
+plot(showEMAs ? ema21 : na, "EMA 21", color=color.new(#4CAF50, 10), linewidth=1)
+plot(showEMAs ? ema50 : na, "EMA 50", color=color.new(#9C27B0, 30), linewidth=2)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PLOTS - Stop Loss / Take Profit / Trailing Stop
+// ─────────────────────────────────────────────────────────────────────────────
+
+plot(showSLTP and inPosition ? stopLossLevel   : na, "Stop Loss",
+     color=color.new(#F44336, 30), linewidth=1, style=plot.style_linebr)
+plot(showSLTP and inPosition ? takeProfitLevel : na, "Take Profit",
+     color=color.new(#4CAF50, 30), linewidth=1, style=plot.style_linebr)
+plot(showSLTP and inPosition and trailingActive ? trailingStop : na, "Trailing Stop",
+     color=color.new(#FF5722, 40), linewidth=1, style=plot.style_steplinebr)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PLOTS - Buy/Sell Markers
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Entry type labels
+entryType = vwapBounce  ? "VWAP" :
+            emaCross    ? "EMA X" :
+            volBreakout ? "VOL" :
+            bbReversion ? "BB" : "BUY"
+
+plotshape(showSignals and buySignal,
+          "Buy", style=shape.triangleup, location=location.belowbar,
+          color=color.new(#4CAF50, 0), size=size.small, text="")
+
+plotshape(showSignals and sellSignal and inPosition,
+          "Sell", style=shape.triangledown, location=location.abovebar,
+          color=color.new(#F44336, 0), size=size.small, text="")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PLOTS - Session Background
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Light green during high-liquidity session, gray outside
+bgcolor(highLiquidity ? color.new(#4CAF50, 97) : color.new(#9E9E9E, 98))
+
+// Highlight London/NY overlap (peak liquidity)
+bgcolor(inLondon and inNewYork ? color.new(#2196F3, 96) : na)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PLOTS - Volume Spike Highlight
+// ─────────────────────────────────────────────────────────────────────────────
+
+barcolor(volRatio >= volSpike ? color.new(#FFEB3B, 0) : na)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INFO TABLE
+// ─────────────────────────────────────────────────────────────────────────────
+
+var table infoTable = table.new(position.top_right, 2, 11,
+     bgcolor=color.new(#1E1E1E, 10), border_width=1)
+
+if barstate.islast
+    table.cell(infoTable, 0, 0, "Indicator",      text_color=color.gray, text_size=size.small)
+    table.cell(infoTable, 1, 0, "Value",           text_color=color.gray, text_size=size.small)
+
+    table.cell(infoTable, 0, 1, "RSI(7)",          text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 1, str.tostring(rsi7, "#.0"),
+               text_color=rsi7 > 70 ? color.red : rsi7 < 30 ? color.green : color.white, text_size=size.small)
+
+    table.cell(infoTable, 0, 2, "MACD Hist",       text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 2, str.tostring(macdHist, "#.00"),
+               text_color=macdHist > 0 ? color.green : color.red, text_size=size.small)
+
+    table.cell(infoTable, 0, 3, "Vol Ratio",       text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 3, str.tostring(volRatio, "#.0") + "x",
+               text_color=volRatio >= volSpike ? color.yellow : volRatio > 1.3 ? color.green : color.white,
+               text_size=size.small)
+
+    table.cell(infoTable, 0, 4, "ATR(14)",         text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 4, str.tostring(atr14, "#.0"),
+               text_color=color.white, text_size=size.small)
+
+    table.cell(infoTable, 0, 5, "VWAP",            text_color=color.white, text_size=size.small)
+    vwapSide = close > vwapValue ? "ABOVE" : "BELOW"
+    table.cell(infoTable, 1, 5, vwapSide,
+               text_color=close > vwapValue ? color.green : color.red, text_size=size.small)
+
+    table.cell(infoTable, 0, 6, "EMA 9>21",        text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 6, ema9 > ema21 ? "BULL" : "BEAR",
+               text_color=ema9 > ema21 ? color.green : color.red, text_size=size.small)
+
+    table.cell(infoTable, 0, 7, "Session",         text_color=color.white, text_size=size.small)
+    sessionName = inLondon and inNewYork ? "OVERLAP" : inLondon ? "LONDON" : inNewYork ? "NEW YORK" : "OFF"
+    table.cell(infoTable, 1, 7, sessionName,
+               text_color=highLiquidity ? color.green : color.gray, text_size=size.small)
+
+    table.cell(infoTable, 0, 8, "Trades Today",    text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 8, str.tostring(tradesToday) + "/" + str.tostring(maxTrades),
+               text_color=tradesToday >= maxTrades ? color.red : color.white, text_size=size.small)
+
+    table.cell(infoTable, 0, 9, "Position",        text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 9, inPosition ? "LONG" : "FLAT",
+               text_color=inPosition ? color.green : color.gray, text_size=size.small)
+
+    if inPosition
+        pnlDisp = (close - entryPrice) / entryPrice * 100
+        table.cell(infoTable, 0, 10, "Unrealized",  text_color=color.white, text_size=size.small)
+        table.cell(infoTable, 1, 10, str.tostring(pnlDisp, "#.2") + "%",
+                   text_color=pnlDisp > 0 ? color.green : color.red, text_size=size.small)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ALERTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+alertcondition(buySignal,
+               title="V11 Day Trade BUY",
+               message="V11 Day Trade: BUY at {{close}} | RSI={{plot_0}} | Vol={{plot_1}}x")
+
+alertcondition(sellSignal and inPosition,
+               title="V11 Day Trade SELL",
+               message="V11 Day Trade: SELL at {{close}}")
+
+alertcondition(volRatio >= volSpike,
+               title="Volume Spike",
+               message="V11: Volume spike detected ({{plot_1}}x avg) at {{close}}")
+
+alertcondition(atSessionEnd and inPosition,
+               title="Session Close Warning",
+               message="V11: Session ending - force closing position at {{close}}")
