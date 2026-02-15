@@ -204,12 +204,24 @@ if buySignal
 // POSITION MANAGEMENT & EXIT CONDITIONS
 // ─────────────────────────────────────────────────────────────────────────────
 
-sellSignal = false
-exitReason = ""
+// Pre-compute crossunder at top level (must evaluate every bar)
+emaCrossDown = ta.crossunder(ema9, ema21)
+
+pnl = inPosition ? (close - entryPrice) / entryPrice : 0.0
+
+// Exit conditions (evaluated every bar, applied only when in position)
+tpHit = inPosition and close >= takeProfitLevel
+slHit = inPosition and close <= stopLossLevel
+trailHit = inPosition and trailingActive and close <= trailingStop
+rsiExit = inPosition and rsi7 >= rsiExitLvl
+sessionCloseExit = inPosition and atSessionEnd
+emaReversal = inPosition and emaCrossDown and pnl > 0.003
+vwapFail = inPosition and close < vwapLower1 and pnl < -0.003 and macdHist < macdHist[1]
+
+sellSignal = tpHit or slHit or trailHit or rsiExit or sessionCloseExit or emaReversal or vwapFail
 
 if inPosition
     highestSince := math.max(nz(highestSince, close), close)
-    pnl = (close - entryPrice) / entryPrice
 
     // Activate trailing stop after reaching threshold
     if not trailingActive and (close - entryPrice) >= trailActATR * atr14
@@ -219,47 +231,28 @@ if inPosition
     if trailingActive
         trailingStop := math.max(nz(trailingStop, 0), close * (1 - trailPct))
 
-    // Exit 1: Take profit
-    tpHit = close >= takeProfitLevel
-    // Exit 2: Stop loss
-    slHit = close <= stopLossLevel
-    // Exit 3: Trailing stop
-    trailHit = trailingActive and close <= trailingStop
-    // Exit 4: RSI exhaustion
-    rsiExit = rsi7 >= rsiExitLvl
-    // Exit 5: End-of-session forced close
-    sessionClose = atSessionEnd
-    // Exit 6: EMA death cross in profit
-    emaReversal = ta.crossunder(ema9, ema21) and pnl > 0.003
-    // Exit 7: VWAP failure with fading momentum
-    vwapFail = close < vwapLower1 and pnl < -0.003 and macdHist < macdHist[1]
-
-    sellSignal := tpHit or slHit or trailHit or rsiExit or sessionClose or emaReversal or vwapFail
-
     if sellSignal
         if tpHit
-            exitReason := "Take Profit"
+            strategy.close("Long", comment="Take Profit")
         else if slHit
-            exitReason := "Stop Loss"
+            strategy.close("Long", comment="Stop Loss")
         else if trailHit
-            exitReason := "Trail Stop"
+            strategy.close("Long", comment="Trail Stop")
         else if rsiExit
-            exitReason := "RSI Exit"
-        else if sessionClose
-            exitReason := "Session Close"
+            strategy.close("Long", comment="RSI Exit")
+        else if sessionCloseExit
+            strategy.close("Long", comment="Session Close")
         else if emaReversal
-            exitReason := "EMA Reversal"
+            strategy.close("Long", comment="EMA Reversal")
         else if vwapFail
-            exitReason := "VWAP Fail"
+            strategy.close("Long", comment="VWAP Fail")
         else
-            exitReason := "Exit"
+            strategy.close("Long", comment="Exit")
 
         // Track losses and set cooldown
         if pnl < 0
             lossesToday  := lossesToday + 1
             cooldownLeft := cooldownBars
-
-        strategy.close("Long", comment=exitReason)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PLOTS - VWAP & Bands
