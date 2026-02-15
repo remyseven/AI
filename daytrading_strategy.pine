@@ -143,7 +143,7 @@ if isNewDay
 
 // Decrement cooldown
 if cooldownLeft > 0
-    cooldownLeft -= 1
+    cooldownLeft := cooldownLeft - 1
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POSITION TRACKING
@@ -163,48 +163,28 @@ inPosition = strategy.position_size > 0
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Filters: session, trade limits, cooldown
-canTrade = highLiquidity and not nearSessionEnd and
-           tradesToday < maxTrades and lossesToday < maxLosses and
-           cooldownLeft == 0
+canTrade = highLiquidity and not nearSessionEnd and tradesToday < maxTrades and lossesToday < maxLosses and cooldownLeft == 0
 
 // Signal 1: VWAP Bounce
 // Price pulls back to VWAP in uptrend, bounces with volume
-vwapBounce = close > vwapValue and
-             low <= vwapValue * 1.002 and
-             ema9 > ema21 and
-             rsi7 > 40 and rsi7 < rsiEntryHi and
-             volRatio > 1.3 and
-             macdHist > 0
+vwapBounce = close > vwapValue and low <= vwapValue * 1.002 and ema9 > ema21 and rsi7 > 40 and rsi7 < rsiEntryHi and volRatio > 1.3 and macdHist > 0
 
 // Signal 2: EMA Momentum Crossover
 // Fresh 9/21 cross above VWAP + 50 EMA with MACD confirmation
-emaCross = ta.crossover(ema9, ema21) and
-           close > vwapValue and
-           close > ema50 and
-           rsi7 > 45 and rsi7 < rsiEntryHi and
-           macdHist > macdHist[1] and
-           volRatio > 1.2
+emaCrossRaw = ta.crossover(ema9, ema21)
+emaCross = emaCrossRaw and close > vwapValue and close > ema50 and rsi7 > 45 and rsi7 < rsiEntryHi and macdHist > macdHist[1] and volRatio > 1.2
 
 // Signal 3: Volume Breakout
 // Big volume spike above recent high with aligned trend
-volBreakout = close > recentHigh and
-              volRatio >= volSpike and
-              close > vwapValue and
-              ema9 > ema21 and
-              ema21 > ema50 and
-              rsi7 > 50 and rsi7 < 72
+volBreakout = close > recentHigh and volRatio >= volSpike and close > vwapValue and ema9 > ema21 and ema21 > ema50 and rsi7 > 50 and rsi7 < 72
 
 // Signal 4: Bollinger Band Mean Reversion
 // Oversold bounce off lower BB in uptrend
-bbReversion = low <= bbLower and
-              close > bbLower and
-              close > open and
-              rsi7 < 35 and
-              volRatio > 1.5 and
-              ema21 > ema50
+bbReversion = low <= bbLower and close > bbLower and close > open and rsi7 < 35 and volRatio > 1.5 and ema21 > ema50
 
-buySignal = canTrade and not inPosition and
-            (vwapBounce or emaCross or volBreakout or bbReversion)
+// Combined entry signal
+anyEntry = vwapBounce or emaCross or volBreakout or bbReversion
+buySignal = canTrade and not inPosition and anyEntry
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ENTRY EXECUTION
@@ -217,7 +197,7 @@ if buySignal
     takeProfitLevel := close + atrTPMult * atr14
     trailingActive := false
     trailingStop   := na
-    tradesToday    += 1
+    tradesToday    := tradesToday + 1
     strategy.entry("Long", strategy.long)
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -257,17 +237,26 @@ if inPosition
     sellSignal := tpHit or slHit or trailHit or rsiExit or sessionClose or emaReversal or vwapFail
 
     if sellSignal
-        exitReason := tpHit        ? "Take Profit" :
-                      slHit        ? "Stop Loss" :
-                      trailHit     ? "Trail Stop" :
-                      rsiExit      ? "RSI Exit" :
-                      sessionClose ? "Session Close" :
-                      emaReversal  ? "EMA Reversal" :
-                      vwapFail     ? "VWAP Fail" : "Exit"
+        if tpHit
+            exitReason := "Take Profit"
+        else if slHit
+            exitReason := "Stop Loss"
+        else if trailHit
+            exitReason := "Trail Stop"
+        else if rsiExit
+            exitReason := "RSI Exit"
+        else if sessionClose
+            exitReason := "Session Close"
+        else if emaReversal
+            exitReason := "EMA Reversal"
+        else if vwapFail
+            exitReason := "VWAP Fail"
+        else
+            exitReason := "Exit"
 
         // Track losses and set cooldown
         if pnl < 0
-            lossesToday  += 1
+            lossesToday  := lossesToday + 1
             cooldownLeft := cooldownBars
 
         strategy.close("Long", comment=exitReason)
@@ -305,10 +294,7 @@ plot(showSLTP and inPosition and trailingActive ? trailingStop : na, "Trailing S
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Entry type labels
-entryType = vwapBounce  ? "VWAP" :
-            emaCross    ? "EMA X" :
-            volBreakout ? "VOL" :
-            bbReversion ? "BB" : "BUY"
+entryType = vwapBounce ? "VWAP" : emaCross ? "EMA X" : volBreakout ? "VOL" : bbReversion ? "BB" : "BUY"
 
 plotshape(showSignals and buySignal,
           "Buy", style=shape.triangleup, location=location.belowbar,
@@ -354,9 +340,8 @@ if barstate.islast
                text_color=macdHist > 0 ? color.green : color.red, text_size=size.small)
 
     table.cell(infoTable, 0, 3, "Vol Ratio",       text_color=color.white, text_size=size.small)
-    table.cell(infoTable, 1, 3, str.tostring(volRatio, "#.0") + "x",
-               text_color=volRatio >= volSpike ? color.yellow : volRatio > 1.3 ? color.green : color.white,
-               text_size=size.small)
+    volColor = volRatio >= volSpike ? color.yellow : volRatio > 1.3 ? color.green : color.white
+    table.cell(infoTable, 1, 3, str.tostring(volRatio, "#.0") + "x", text_color=volColor, text_size=size.small)
 
     table.cell(infoTable, 0, 4, "ATR(14)",         text_color=color.white, text_size=size.small)
     table.cell(infoTable, 1, 4, str.tostring(atr14, "#.0"),
