@@ -172,14 +172,22 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def run_backtest(
-    strategy: Strategy, df: pd.DataFrame, config: BacktestConfig = None
+    strategy: Strategy, df: pd.DataFrame, config: BacktestConfig = None,
+    skip_indicators: bool = False, periods_per_year: int = 365
 ) -> BacktestResult:
-    """Run a backtest for the given strategy on the provided data."""
+    """Run a backtest for the given strategy on the provided data.
+
+    Args:
+        periods_per_year: For annualization. 365 for daily, ~105120 for 5min crypto.
+    """
     if config is None:
         config = BacktestConfig()
 
     # Generate signals
-    data = compute_indicators(df.copy())
+    if skip_indicators:
+        data = df.copy()
+    else:
+        data = compute_indicators(df.copy())
     data = strategy.generate_signals(data)
 
     # Drop NaN rows (from indicator warmup)
@@ -283,15 +291,16 @@ def run_backtest(
     drawdown = (equity_series - peak) / peak
     result.max_drawdown_pct = drawdown.min() * 100
 
-    # Sharpe Ratio (daily returns annualized)
+    # Sharpe Ratio (returns annualized)
     daily_returns = equity_series.pct_change().dropna()
+    annualize_factor = np.sqrt(periods_per_year)
     if len(daily_returns) > 0 and daily_returns.std() > 0:
-        result.sharpe_ratio = daily_returns.mean() / daily_returns.std() * np.sqrt(365)
+        result.sharpe_ratio = daily_returns.mean() / daily_returns.std() * annualize_factor
 
     # Sortino Ratio
     downside_returns = daily_returns[daily_returns < 0]
     if len(downside_returns) > 0 and downside_returns.std() > 0:
-        result.sortino_ratio = daily_returns.mean() / downside_returns.std() * np.sqrt(365)
+        result.sortino_ratio = daily_returns.mean() / downside_returns.std() * annualize_factor
 
     # Calmar Ratio
     if result.max_drawdown_pct != 0:
