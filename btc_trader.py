@@ -21,6 +21,12 @@ import numpy as np
 
 load_dotenv()
 
+# ANSI color codes for terminal output
+GREEN = "\033[92m"
+RED = "\033[91m"
+YELLOW = "\033[93m"
+RESET = "\033[0m"
+
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIGURATION (mirrors Pine Script inputs)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -552,8 +558,8 @@ def run_bot(client, cfg):
                 qty = round((cash * cfg["qty_pct"]) / price, 4)
 
                 if qty > 0:
-                    log.info(">>> BUY SIGNAL: %s | price=%.2f | qty=%.4f",
-                             signals["entry_type"], price, qty)
+                    log.info("%s>>> BUY SIGNAL: %s | price=%.2f | qty=%.4f%s",
+                             GREEN, signals["entry_type"], price, qty, RESET)
                     client.submit_order(symbol, qty, "buy")
 
                     state.in_position = True
@@ -565,22 +571,23 @@ def run_bot(client, cfg):
                     state.trailing_stop = None
                     state.trades_today += 1
 
-                    log.info("    SL=%.2f | TP=%.2f | ATR=%.2f",
-                             state.stop_loss, state.take_profit, signals["atr"])
+                    log.info("%s    SL=%.2f | TP=%.2f | ATR=%.2f%s",
+                             GREEN, state.stop_loss, state.take_profit, signals["atr"], RESET)
 
             # ── EXECUTE SELL ──
             elif signals["sell"] and state.in_position:
                 pnl = (signals["price"] - state.entry_price) / state.entry_price * 100
-                log.info(">>> SELL SIGNAL: %s | price=%.2f | PnL=%.2f%%",
-                         signals["exit_reason"], signals["price"], pnl)
+                sell_color = RED if pnl < 0 else YELLOW
+                log.info("%s>>> SELL SIGNAL: %s | price=%.2f | PnL=%.2f%%%s",
+                         sell_color, signals["exit_reason"], signals["price"], pnl, RESET)
 
                 client.close_position(symbol)
 
                 if (signals["price"] - state.entry_price) < 0:
                     state.losses_today += 1
                     state.cooldown_left = cfg["cooldown_bars"]
-                    log.info("    Loss recorded. Losses today: %d. Cooldown: %d bars",
-                             state.losses_today, state.cooldown_left)
+                    log.info("%s    Loss recorded. Losses today: %d. Cooldown: %d bars%s",
+                             RED, state.losses_today, state.cooldown_left, RESET)
 
                 state.in_position = False
                 state.entry_price = None
