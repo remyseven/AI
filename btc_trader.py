@@ -133,8 +133,12 @@ class AlpacaClient:
     # Market data — crypto bars
     def get_bars(self, symbol, timeframe="5Min", limit=100):
         """Fetch historical crypto bars from Alpaca data API."""
+        # Calculate start time to ensure we get recent bars
+        # For 5-min bars, go back limit * 5 minutes plus buffer for gaps
+        minutes_back = limit * 5 + 60  # extra hour buffer
+        start_time = (datetime.now(timezone.utc) - timedelta(minutes=minutes_back)).strftime("%Y-%m-%dT%H:%M:%SZ")
         # Build URL manually — requests would encode the slash in BTC/USD
-        url = f"{self.data_url}/bars?symbols={symbol}&timeframe={timeframe}&limit={limit}&sort=asc"
+        url = f"{self.data_url}/bars?symbols={symbol}&timeframe={timeframe}&limit={limit}&start={start_time}&sort=asc"
         data = self._request("GET", url)
         return data.get("bars", {}).get(symbol, [])
 
