@@ -27,6 +27,9 @@ RED = "\033[91m"
 YELLOW = "\033[93m"
 RESET = "\033[0m"
 
+# Central Time zone (UTC-6)
+CT = timezone(timedelta(hours=-6))
+
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIGURATION (mirrors Pine Script inputs)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -70,10 +73,19 @@ CONFIG = {
 # LOGGING
 # ─────────────────────────────────────────────────────────────────────────────
 
+class CTFormatter(logging.Formatter):
+    """Log formatter that displays timestamps in Central Time."""
+    def formatTime(self, record, datefmt=None):
+        ct_time = datetime.fromtimestamp(record.created, tz=CT)
+        if datefmt:
+            return ct_time.strftime(datefmt)
+        return ct_time.strftime("%Y-%m-%d %H:%M:%S")
+
+handler = logging.StreamHandler()
+handler.setFormatter(CTFormatter("%(asctime)s [%(levelname)s] %(message)s"))
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[handler],
 )
 log = logging.getLogger("btc_trader")
 
@@ -607,8 +619,8 @@ def run_bot(client, cfg):
             now = datetime.now(timezone.utc)
             seconds_into_bar = (now.minute * 60 + now.second) % cfg["bar_interval_sec"]
             sleep_sec = cfg["bar_interval_sec"] - seconds_into_bar + 5  # +5s buffer for bar to close
-            log.info("Next check in %ds (at %s UTC)",
-                     sleep_sec, (now + timedelta(seconds=sleep_sec)).strftime("%H:%M:%S"))
+            log.info("Next check in %ds (at %s CT)",
+                     sleep_sec, (now + timedelta(seconds=sleep_sec)).astimezone(CT).strftime("%H:%M:%S"))
             time.sleep(sleep_sec)
 
         except KeyboardInterrupt:
