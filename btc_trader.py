@@ -104,12 +104,14 @@ class AlpacaClient:
 
     # Positions
     def get_position(self, symbol):
-        try:
-            return self._request("GET", f"{self.base_url}/positions/{symbol.replace('/', '')}")
-        except requests.HTTPError as e:
-            if e.response.status_code == 404:
-                return None
-            raise
+        sym = symbol.replace("/", "")
+        resp = self.session.get(f"{self.base_url}/positions/{sym}")
+        if resp.status_code == 404:
+            return None  # No open position — expected
+        if resp.status_code not in (200, 204):
+            log.error("API GET positions/%s -> %s: %s", sym, resp.status_code, resp.text)
+            resp.raise_for_status()
+        return resp.json()
 
     # Orders
     def submit_order(self, symbol, qty, side, order_type="market", time_in_force="gtc"):
@@ -132,20 +134,18 @@ class AlpacaClient:
     def get_bars(self, symbol, timeframe="5Min", limit=100):
         """Fetch historical crypto bars from Alpaca data API."""
         params = {
-            "symbols": symbol.replace("/", ""),
+            "symbols": symbol,  # Data API requires "BTC/USD" format
             "timeframe": timeframe,
             "limit": limit,
             "sort": "asc",
         }
         data = self._request("GET", f"{self.data_url}/bars", params=params)
-        sym_key = symbol.replace("/", "")
-        return data.get("bars", {}).get(sym_key, [])
+        return data.get("bars", {}).get(symbol, [])
 
     def get_latest_quote(self, symbol):
-        params = {"symbols": symbol.replace("/", "")}
+        params = {"symbols": symbol}  # Data API requires "BTC/USD" format
         data = self._request("GET", f"{self.data_url}/latest/quotes", params=params)
-        sym_key = symbol.replace("/", "")
-        return data.get("quotes", {}).get(sym_key)
+        return data.get("quotes", {}).get(symbol)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
