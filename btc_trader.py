@@ -57,7 +57,7 @@ CONFIG = {
     # Bot settings
     "symbol": "BTC/USD",
     "bar_interval_sec": 300,  # 5 minutes
-    "qty_pct": 1.0,           # 100% of available cash
+    "qty_pct": 0.10,          # 10% of available cash
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
