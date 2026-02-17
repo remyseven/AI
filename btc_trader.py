@@ -58,11 +58,6 @@ CONFIG = {
     "max_losses": 2,
     "cooldown_bars": 6,
 
-    # Session settings (UTC hours)
-    "london_open": 7,
-    "ny_close": 22,
-    "session_end": 21,
-
     # Bot settings
     "symbol": "BTC/USD",
     "bar_interval_sec": 300,  # 5 minutes
@@ -392,21 +387,12 @@ def compute_signals(bars, state, cfg):
     if state.cooldown_left > 0:
         state.cooldown_left -= 1
 
-    # Session detection
-    utc_hour = datetime.now(timezone.utc).hour
-    in_london = utc_hour >= cfg["london_open"] and utc_hour < 16
-    in_ny = utc_hour >= 13 and utc_hour < cfg["ny_close"]
-    high_liq = in_london or in_ny
-    near_session_end = utc_hour >= (cfg["session_end"] - 1)
-    at_session_end = utc_hour >= cfg["session_end"]
-
     # NaN checks
     if any(np.isnan(x) for x in [ema9_v, ema21_v, ema50_v, rsi_v, macd_hist, atr_v, vwap_v]):
         return {"buy": False, "sell": False, "reason": "indicators not ready"}
 
     # ── ENTRY SIGNALS ──
-    can_trade = (high_liq and not near_session_end
-                 and state.trades_today < cfg["max_trades"]
+    can_trade = (state.trades_today < cfg["max_trades"]
                  and state.losses_today < cfg["max_losses"]
                  and state.cooldown_left == 0)
 
@@ -466,7 +452,6 @@ def compute_signals(bars, state, cfg):
         sl_hit = c <= state.stop_loss
         trail_hit = state.trailing_active and state.trailing_stop and c <= state.trailing_stop
         rsi_exit = rsi_v >= cfg["rsi_exit_lvl"]
-        session_close = at_session_end
         ema_reversal = ema_cross_down and pnl > 0.003
         vwap_fail = (c < vwap_lower1 and pnl < -0.003
                      and not np.isnan(macd_hist_prev) and macd_hist < macd_hist_prev)
@@ -479,8 +464,6 @@ def compute_signals(bars, state, cfg):
             sell_signal, exit_reason = True, "Trail Stop"
         elif rsi_exit:
             sell_signal, exit_reason = True, "RSI Exit"
-        elif session_close:
-            sell_signal, exit_reason = True, "Session Close"
         elif ema_reversal:
             sell_signal, exit_reason = True, "EMA Reversal"
         elif vwap_fail:
@@ -503,7 +486,6 @@ def compute_signals(bars, state, cfg):
         "ema21": ema21_v,
         "vwap": vwap_v,
         "macd_hist": macd_hist,
-        "session": "London/NY" if (in_london and in_ny) else "London" if in_london else "NY" if in_ny else "Off",
     }
 
 
@@ -556,10 +538,10 @@ def run_bot(client, cfg):
 
             # Log current state
             log.info(
-                "Bar: price=%.2f | RSI=%.1f | Vol=%.1fx | MACD_H=%.2f | EMA9=%.2f EMA21=%.2f | VWAP=%.2f | Session=%s",
+                "Bar: price=%.2f | RSI=%.1f | Vol=%.1fx | MACD_H=%.2f | EMA9=%.2f EMA21=%.2f | VWAP=%.2f",
                 signals["price"], signals.get("rsi", 0), signals.get("vol_ratio", 0),
                 signals.get("macd_hist", 0), signals.get("ema9", 0), signals.get("ema21", 0),
-                signals.get("vwap", 0), signals.get("session", "?"),
+                signals.get("vwap", 0),
             )
 
             # ── EXECUTE BUY ──

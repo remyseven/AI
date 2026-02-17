@@ -9,7 +9,7 @@ Key indicators:
 - RSI(7) - short-period momentum
 - Volume spike detection - confirmation of breakouts
 - ATR-based stops - volatility-adjusted risk management
-- Session filtering - trades during high-liquidity windows only
+- No session restriction — trades can execute 24/7
 
 NOTE: This strategy is designed for REAL exchange data (e.g., Binance 5min candles).
 Synthetic data (generate_intraday_data.py) uses Brownian bridge interpolation which
@@ -83,17 +83,6 @@ def compute_intraday_indicators(df: pd.DataFrame) -> pd.DataFrame:
     d["BB_upper"] = d["BB_mid"] + 2 * bb_std
     d["BB_lower"] = d["BB_mid"] - 2 * bb_std
 
-    # Session detection (UTC-based hours)
-    d["Hour"] = d.index.hour
-    # High-liquidity sessions (approximate in UTC):
-    # London: 07:00-16:00 UTC
-    # New York: 13:00-22:00 UTC
-    # Overlap: 13:00-16:00 UTC (highest volume)
-    d["London"] = (d["Hour"] >= 7) & (d["Hour"] < 16)
-    d["NewYork"] = (d["Hour"] >= 13) & (d["Hour"] < 22)
-    d["Overlap"] = (d["Hour"] >= 13) & (d["Hour"] < 16)
-    d["HighLiquidity"] = d["London"] | d["NewYork"]
-
     # Candle body ratio (for pin bar / doji detection)
     body = (d["Close"] - d["Open"]).abs()
     full_range = d["High"] - d["Low"]
@@ -115,8 +104,7 @@ def compute_intraday_indicators(df: pd.DataFrame) -> pd.DataFrame:
 #   - RSI(7) for momentum confirmation
 #   - Volume spike detection for breakout confirmation
 #   - ATR-based dynamic stops and targets
-#   - Session filtering (only trades during London/NY hours)
-#   - Forced close before end of day (no overnight holds)
+#   - No session restriction — trades can execute 24/7
 #
 # Entry types:
 #   1. VWAP Bounce: Price pulls back to VWAP, bounces with volume
@@ -127,8 +115,7 @@ def compute_intraday_indicators(df: pd.DataFrame) -> pd.DataFrame:
 #   1. Take profit at 1.5-2x ATR from entry
 #   2. Stop loss at 1x ATR from entry (1.5:1 to 2:1 R:R)
 #   3. RSI exhaustion (>78 for longs)
-#   4. End-of-session forced close
-#   5. Trailing stop after 1x ATR profit reached
+#   4. Trailing stop after 1x ATR profit reached
 # =============================================================================
 class V11_IntradayVWAP(Strategy):
     name = "V11: Intraday VWAP + EMA Day Trading"
@@ -136,7 +123,7 @@ class V11_IntradayVWAP(Strategy):
     def __init__(self, atr_tp_mult=3.0, atr_sl_mult=1.2, vol_spike=2.0,
                  rsi_entry_low=35, rsi_entry_high=62, rsi_exit=80,
                  trail_activation_atr=1.5, trail_pct=0.003,
-                 max_trades_per_day=3, session_close_hour=21):
+                 max_trades_per_day=3):
         super().__init__({
             "atr_tp_mult": atr_tp_mult,
             "atr_sl_mult": atr_sl_mult,
@@ -147,7 +134,6 @@ class V11_IntradayVWAP(Strategy):
             "trail_activation_atr": trail_activation_atr,
             "trail_pct": trail_pct,
             "max_trades_per_day": max_trades_per_day,
-            "session_close_hour": session_close_hour,
         })
 
     def generate_signals(self, df):
@@ -163,8 +149,6 @@ class V11_IntradayVWAP(Strategy):
         atr = df["ATR_14"]
         vwap = df["VWAP"]
         vol_ratio = df["Vol_ratio"]
-        high_liq = df["HighLiquidity"]
-        hour = df["Hour"]
         bb_lower = df["BB_lower"]
         bb_upper = df["BB_upper"]
 
@@ -185,7 +169,6 @@ class V11_IntradayVWAP(Strategy):
         for i in range(warmup, len(df)):
             close = df["Close"].iloc[i]
             bar_date = df.index[i].date()
-            bar_hour = hour.iloc[i]
 
             # Reset daily counters
             if bar_date != current_date:
@@ -209,16 +192,9 @@ class V11_IntradayVWAP(Strategy):
             curr_vol = vol_ratio.iloc[i]
             curr_macd = macd_hist.iloc[i]
             prev_macd = macd_hist.iloc[i - 1] if i > 0 else 0
-            curr_high_liq = high_liq.iloc[i]
-
             if not in_position:
-                # Skip if max daily trades reached or outside session
+                # Skip if max daily trades reached
                 if trades_today >= p["max_trades_per_day"]:
-                    continue
-                if not curr_high_liq:
-                    continue
-                # Don't enter new trades too close to session end
-                if bar_hour >= p["session_close_hour"] - 1:
                     continue
                 # Cooldown after losses (avoid revenge trading)
                 if cooldown_bars > 0:
@@ -315,17 +291,14 @@ class V11_IntradayVWAP(Strategy):
                 # 4. RSI exhaustion
                 rsi_exit = curr_rsi >= p["rsi_exit"]
 
-                # 5. End-of-session forced close
-                session_close = bar_hour >= p["session_close_hour"]
-
-                # 6. EMA death cross while in solid profit (trend reversal)
+                # 5. EMA death cross while in solid profit (trend reversal)
                 ema_reversal = (
                     curr_ema9 < curr_ema21 and
                     ema9.iloc[i - 1] >= ema21.iloc[i - 1] and
                     pnl > 0.003  # Only exit on cross if meaningful profit
                 )
 
-                # 7. Price drops below VWAP lower band with momentum failing
+                # 6. Price drops below VWAP lower band with momentum failing
                 vwap_lower = df["VWAP_lower1"].iloc[i]
                 vwap_fail = (
                     close < vwap_lower and
@@ -333,7 +306,7 @@ class V11_IntradayVWAP(Strategy):
                     curr_macd < prev_macd  # Momentum confirming weakness
                 )
 
-                if tp_hit or sl_hit or trail_hit or rsi_exit or session_close or ema_reversal or vwap_fail:
+                if tp_hit or sl_hit or trail_hit or rsi_exit or ema_reversal or vwap_fail:
                     df.iloc[i, df.columns.get_loc("signal")] = -1
                     in_position = False
                     # Track losses and set cooldown

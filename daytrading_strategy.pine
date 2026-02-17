@@ -3,7 +3,7 @@
 // =============================================================================
 //
 // VWAP + EMA Momentum day trading strategy for 5-minute charts.
-// All trades opened and closed within the same session (no overnight holds).
+// No session restriction — trades can execute 24/7.
 //
 // ENTRY CONDITIONS (any one triggers):
 //   1. VWAP Bounce: Price pulls back to VWAP in uptrend, bounces with volume
@@ -16,15 +16,13 @@
 //   2. Stop Loss: 1.2x ATR from entry
 //   3. Trailing Stop: Activated after 1.5x ATR profit, trails at 0.3%
 //   4. RSI Exhaustion: RSI(7) > 80
-//   5. Session Close: Forced exit at 21:00 UTC
-//   6. EMA Death Cross: 9 EMA crosses below 21 EMA while in profit
-//   7. VWAP Failure: Price below VWAP lower band with fading momentum
+//   5. EMA Death Cross: 9 EMA crosses below 21 EMA while in profit
+//   6. VWAP Failure: Price below VWAP lower band with fading momentum
 //
 // RISK MANAGEMENT:
 //   - Max 3 trades per day
 //   - Stop after 2 losses per day
 //   - 30-minute cooldown after losing trade
-//   - Session filtering (London/NY hours only: 07:00-22:00 UTC)
 // =============================================================================
 
 //@version=6
@@ -64,11 +62,6 @@ grpRisk   = "Risk Management"
 maxTrades   = input.int(3,    "Max Trades Per Day",         minval=1,  maxval=10,  group=grpRisk)
 maxLosses   = input.int(2,    "Max Losses Per Day (stop)",  minval=1,  maxval=5,   group=grpRisk)
 cooldownBars = input.int(6,   "Cooldown Bars After Loss",   minval=0,  maxval=24,  group=grpRisk)
-
-grpSession = "Session Settings"
-londonOpen  = input.int(7,    "London Open (UTC hour)",     minval=0,  maxval=23,  group=grpSession)
-nyClose     = input.int(22,   "New York Close (UTC hour)",  minval=0,  maxval=23,  group=grpSession)
-sessionEnd  = input.int(21,   "Force Close Hour (UTC)",     minval=0,  maxval=23,  group=grpSession)
 
 grpVisual = "Display"
 showVWAP    = input.bool(true, "Show VWAP + Bands",        group=grpVisual)
@@ -116,17 +109,6 @@ volRatio  = volume / volSMA20
 recentHigh = ta.highest(high, 12)[1]  // Previous 12 bars, shifted to avoid lookahead
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SESSION DETECTION
-// ─────────────────────────────────────────────────────────────────────────────
-
-currentHour = hour(time, "UTC")
-inLondon    = currentHour >= londonOpen and currentHour < 16
-inNewYork   = currentHour >= 13 and currentHour < nyClose
-highLiquidity = inLondon or inNewYork
-nearSessionEnd = currentHour >= (sessionEnd - 1)
-atSessionEnd   = currentHour >= sessionEnd
-
-// ─────────────────────────────────────────────────────────────────────────────
 // DAILY TRADE/LOSS TRACKING
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -163,7 +145,7 @@ inPosition = strategy.position_size > 0
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Filters: session, trade limits, cooldown
-canTrade = highLiquidity and not nearSessionEnd and tradesToday < maxTrades and lossesToday < maxLosses and cooldownLeft == 0
+canTrade = tradesToday < maxTrades and lossesToday < maxLosses and cooldownLeft == 0
 
 // Signal 1: VWAP Bounce
 // Price pulls back to VWAP in uptrend, bounces with volume
@@ -214,11 +196,10 @@ tpHit = inPosition and close >= takeProfitLevel
 slHit = inPosition and close <= stopLossLevel
 trailHit = inPosition and trailingActive and close <= trailingStop
 rsiExit = inPosition and rsi7 >= rsiExitLvl
-sessionCloseExit = inPosition and atSessionEnd
 emaReversal = inPosition and emaCrossDown and pnl > 0.003
 vwapFail = inPosition and close < vwapLower1 and pnl < -0.003 and macdHist < macdHist[1]
 
-sellSignal = tpHit or slHit or trailHit or rsiExit or sessionCloseExit or emaReversal or vwapFail
+sellSignal = tpHit or slHit or trailHit or rsiExit or emaReversal or vwapFail
 
 if inPosition
     highestSince := math.max(nz(highestSince, close), close)
@@ -240,8 +221,6 @@ if inPosition
             strategy.close("Long", comment="Trail Stop")
         else if rsiExit
             strategy.close("Long", comment="RSI Exit")
-        else if sessionCloseExit
-            strategy.close("Long", comment="Session Close")
         else if emaReversal
             strategy.close("Long", comment="EMA Reversal")
         else if vwapFail
@@ -301,11 +280,6 @@ plotshape(showSignals and sellSignal and inPosition,
 // PLOTS - Session Background
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Light green during high-liquidity session, gray outside
-bgcolor(highLiquidity ? color.new(#4CAF50, 97) : color.new(#9E9E9E, 98))
-
-// Highlight London/NY overlap (peak liquidity)
-bgcolor(inLondon and inNewYork ? color.new(#2196F3, 96) : na)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PLOTS - Volume Spike Highlight
@@ -317,7 +291,7 @@ barcolor(volRatio >= volSpike ? color.new(#FFEB3B, 0) : na)
 // INFO TABLE
 // ─────────────────────────────────────────────────────────────────────────────
 
-var table infoTable = table.new(position.top_right, 2, 11,
+var table infoTable = table.new(position.top_right, 2, 10,
      bgcolor=color.new(#1E1E1E, 10), border_width=1)
 
 if barstate.islast
@@ -349,23 +323,18 @@ if barstate.islast
     table.cell(infoTable, 1, 6, ema9 > ema21 ? "BULL" : "BEAR",
                text_color=ema9 > ema21 ? color.green : color.red, text_size=size.small)
 
-    table.cell(infoTable, 0, 7, "Session",         text_color=color.white, text_size=size.small)
-    sessionName = inLondon and inNewYork ? "OVERLAP" : inLondon ? "LONDON" : inNewYork ? "NEW YORK" : "OFF"
-    table.cell(infoTable, 1, 7, sessionName,
-               text_color=highLiquidity ? color.green : color.gray, text_size=size.small)
-
-    table.cell(infoTable, 0, 8, "Trades Today",    text_color=color.white, text_size=size.small)
-    table.cell(infoTable, 1, 8, str.tostring(tradesToday) + "/" + str.tostring(maxTrades),
+    table.cell(infoTable, 0, 7, "Trades Today",    text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 7, str.tostring(tradesToday) + "/" + str.tostring(maxTrades),
                text_color=tradesToday >= maxTrades ? color.red : color.white, text_size=size.small)
 
-    table.cell(infoTable, 0, 9, "Position",        text_color=color.white, text_size=size.small)
-    table.cell(infoTable, 1, 9, inPosition ? "LONG" : "FLAT",
+    table.cell(infoTable, 0, 8, "Position",        text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 8, inPosition ? "LONG" : "FLAT",
                text_color=inPosition ? color.green : color.gray, text_size=size.small)
 
     if inPosition
         pnlDisp = (close - entryPrice) / entryPrice * 100
-        table.cell(infoTable, 0, 10, "Unrealized",  text_color=color.white, text_size=size.small)
-        table.cell(infoTable, 1, 10, str.tostring(pnlDisp, "#.2") + "%",
+        table.cell(infoTable, 0, 9, "Unrealized",  text_color=color.white, text_size=size.small)
+        table.cell(infoTable, 1, 9, str.tostring(pnlDisp, "#.2") + "%",
                    text_color=pnlDisp > 0 ? color.green : color.red, text_size=size.small)
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -384,6 +353,3 @@ alertcondition(volRatio >= volSpike,
                title="Volume Spike",
                message="V11: Volume spike detected ({{plot_1}}x avg) at {{close}}")
 
-alertcondition(atSessionEnd and inPosition,
-               title="Session Close Warning",
-               message="V11: Session ending - force closing position at {{close}}")
