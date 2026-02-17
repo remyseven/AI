@@ -133,18 +133,15 @@ class AlpacaClient:
     # Market data — crypto bars
     def get_bars(self, symbol, timeframe="5Min", limit=100):
         """Fetch historical crypto bars from Alpaca data API."""
-        params = {
-            "symbols": symbol,  # Data API requires "BTC/USD" format
-            "timeframe": timeframe,
-            "limit": limit,
-            "sort": "asc",
-        }
-        data = self._request("GET", f"{self.data_url}/bars", params=params)
+        # Build URL manually — requests would encode the slash in BTC/USD
+        url = f"{self.data_url}/bars?symbols={symbol}&timeframe={timeframe}&limit={limit}&sort=asc"
+        data = self._request("GET", url)
         return data.get("bars", {}).get(symbol, [])
 
     def get_latest_quote(self, symbol):
-        params = {"symbols": symbol}  # Data API requires "BTC/USD" format
-        data = self._request("GET", f"{self.data_url}/latest/quotes", params=params)
+        # Build URL manually to preserve slash in BTC/USD
+        url = f"{self.data_url}/latest/quotes?symbols={symbol}"
+        data = self._request("GET", url)
         return data.get("quotes", {}).get(symbol)
 
 
