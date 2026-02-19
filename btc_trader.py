@@ -21,6 +21,19 @@ import numpy as np
 
 load_dotenv()
 
+# Disable Windows QuickEdit mode — clicking the console window pauses the
+# process until Enter is pressed, which stalls the trading loop.
+import platform
+if platform.system() == "Windows":
+    import ctypes
+    _kernel32 = ctypes.windll.kernel32
+    _handle = _kernel32.GetStdHandle(-10)          # STD_INPUT_HANDLE
+    _mode = ctypes.c_ulong()
+    _kernel32.GetConsoleMode(_handle, ctypes.byref(_mode))
+    _mode.value &= ~0x0040                         # disable ENABLE_QUICK_EDIT_MODE
+    _mode.value &= ~0x0020                         # disable ENABLE_INSERT_MODE
+    _kernel32.SetConsoleMode(_handle, _mode)
+
 # ANSI color codes for terminal output
 GREEN = "\033[92m"
 RED = "\033[91m"
