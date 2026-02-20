@@ -98,6 +98,28 @@ logging.basicConfig(
 log = logging.getLogger("btc_trader")
 
 # ─────────────────────────────────────────────────────────────────────────────
+# TELEGRAM NOTIFICATIONS
+# ─────────────────────────────────────────────────────────────────────────────
+
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+
+
+def notify(message: str):
+    """Send a Telegram message. Fails silently so it never interrupts trading."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"},
+            timeout=5,
+        )
+    except Exception:
+        log.debug("Telegram notification failed", exc_info=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # ALPACA API CLIENT
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -580,6 +602,13 @@ def run_bot(client, cfg):
 
                     log.info("%s    SL=%.2f | TP=%.2f | ATR=%.2f%s",
                              GREEN, state.stop_loss, state.take_profit, signals["atr"], RESET)
+                    notify(
+                        f"*BUY* {symbol}\n"
+                        f"Signal: {signals['entry_type']}\n"
+                        f"Price: ${price:,.2f}\n"
+                        f"Qty: {qty}\n"
+                        f"SL: ${state.stop_loss:,.2f} | TP: ${state.take_profit:,.2f}"
+                    )
 
             # ── EXECUTE SELL ──
             elif signals["sell"] and state.in_position:
@@ -589,6 +618,13 @@ def run_bot(client, cfg):
                          sell_color, signals["exit_reason"], signals["price"], pnl, RESET)
 
                 client.close_position(symbol)
+                notify(
+                    f"*SELL* {symbol}\n"
+                    f"Reason: {signals['exit_reason']}\n"
+                    f"Price: ${signals['price']:,.2f}\n"
+                    f"Entry: ${state.entry_price:,.2f}\n"
+                    f"PnL: {pnl:+.2f}%"
+                )
 
                 if (signals["price"] - state.entry_price) < 0:
                     state.losses_today += 1
