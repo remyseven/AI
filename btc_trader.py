@@ -61,9 +61,9 @@ CONFIG = {
     # Exit settings
     "atr_len": 14,
     "atr_tp_mult": 3.0,
-    "atr_sl_mult": 1.2,
+    "atr_sl_mult": 1.5,
     "trail_act_atr": 1.5,
-    "trail_pct": 0.3 / 100,  # 0.3% as decimal
+    "trail_pct": 0.5 / 100,  # 0.5% as decimal
     "rsi_exit_lvl": 80,
 
     # Risk management
@@ -307,13 +307,21 @@ def stdev(values, period):
     return result
 
 
-def vwap(highs, lows, closes, volumes):
-    """Session VWAP (cumulative from start of bars)."""
+def vwap(highs, lows, closes, volumes, timestamps=None):
+    """Session VWAP anchored to midnight UTC. Resets each new day."""
     hlc3 = [(h + l + c) / 3.0 for h, l, c in zip(highs, lows, closes)]
     cum_vol = 0.0
     cum_pv = 0.0
+    prev_date = None
     result = []
     for i in range(len(hlc3)):
+        # Reset at midnight UTC boundary
+        if timestamps and timestamps[i]:
+            cur_date = timestamps[i][:10]
+            if prev_date is not None and cur_date != prev_date:
+                cum_vol = 0.0
+                cum_pv = 0.0
+            prev_date = cur_date
         cum_vol += volumes[i]
         cum_pv += hlc3[i] * volumes[i]
         result.append(cum_pv / cum_vol if cum_vol > 0 else hlc3[i])
@@ -365,6 +373,7 @@ def compute_signals(bars, state, cfg):
     lows = [b["l"] for b in bars]
     closes = [b["c"] for b in bars]
     volumes = [b["v"] for b in bars]
+    timestamps = [b.get("t", "") for b in bars]
 
     # Current bar index
     i = -1
@@ -376,7 +385,7 @@ def compute_signals(bars, state, cfg):
     rsi7 = rsi(closes, cfg["rsi_len"])
     macd_l, macd_s, macd_h = macd(closes, 8, 17, 9)
     atr14 = atr(highs, lows, closes, cfg["atr_len"])
-    vwap_vals = vwap(highs, lows, closes, volumes)
+    vwap_vals = vwap(highs, lows, closes, volumes, timestamps)
     bb_basis = sma(closes, cfg["bb_len"])
     bb_dev_vals = stdev(closes, cfg["bb_len"])
     vol_sma20 = sma(volumes, 20)
