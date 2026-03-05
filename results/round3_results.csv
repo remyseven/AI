@@ -1,0 +1,4 @@
+Strategy,Return%,CAGR%,MaxDD%,Sharpe,Sortino,Calmar,PF,WinRate%,Trades,AvgTrade%,TimeInMkt%
+V11: Halving Cycle Momentum,185.8,10.97,-49.6,1.12,0.73,0.22,2.34,54.5,22,7.64,15.3
+V12: Pi Cycle Top Detector,417479.5,128.55,-44.3,4.88,5.71,2.9,15.63,29.6,115,17.0,69.6
+V13: Supertrend (ATR Bands),6958.0,52.51,-20.1,3.95,2.43,2.61,57.61,80.0,10,80.72,18.3
